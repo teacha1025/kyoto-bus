@@ -1,0 +1,2 @@
+agency_id,agency_name,agency_url,agency_timezone,agency_lang,agency_phone,agency_fare_url,agency_email
+2000020261009,"京都市交通局",https://www.city.kyoto.lg.jp/kotsu/,Asia/Tokyo,ja,,,
