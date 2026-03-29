@@ -1,0 +1,2 @@
+feed_publisher_name,feed_publisher_url,feed_lang,feed_start_date,feed_end_date,feed_version
+京都バス,https://www.kyotobus.jp/,ja,20260328,20260405,20260328_20260405

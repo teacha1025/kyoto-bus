@@ -1,0 +1,2 @@
+agency_id,agency_name,agency_url,agency_timezone,agency_lang,agency_phone,agency_fare_url,agency_email
+8130001002355,京都バス株式会社,https://www.kyotobus.jp/,Asia/Tokyo,ja,075-871-7521,,
