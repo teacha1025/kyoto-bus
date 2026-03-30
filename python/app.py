@@ -45,6 +45,7 @@ def prepare_gtfs_data(data_dir):
                 response.raise_for_status()
                 with zipfile.ZipFile(io.BytesIO(response.content)) as z:
                     z.extractall(op_path)
+                print(f"✅ {operator} のデータ取得に成功しました")
             except Exception as e:
                 print(f"❌ {operator} のデータ取得に失敗しました: {e}")
                 
