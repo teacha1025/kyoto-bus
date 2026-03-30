@@ -20,8 +20,8 @@ DATA_DIR = "gtfs_data"
 # --- GTFSデータの自動準備 ---
 # ダウンロードURLがわかる場合はここに記載します
 GTFS_URLS = {
-    "kyoto_city": "https://api.odpt.org/api/v4/files/odpt/KyotoMunicipalTransportation/Kyoto_City_Bus_GTFS.zip?date=20260323",
-    "kyoto_bus": "https://api.odpt.org/api/v4/files/odpt/KyotoBus/AllLines.zip?date=20260328"
+    "市バス": "https://api.odpt.org/api/v4/files/odpt/KyotoMunicipalTransportation/Kyoto_City_Bus_GTFS.zip?date=20260323",
+    "京都バス": "https://api.odpt.org/api/v4/files/odpt/KyotoBus/AllLines.zip?date=20260328"
 }
 
 @st.cache_resource
@@ -30,11 +30,16 @@ def prepare_gtfs_data(data_dir):
         os.makedirs(data_dir)
         
     # StreamlitのSecretsからトークンを取得（設定されていない場合はNone）
-    odpt_token = st.secrets.get("ODPT_TOKEN")
+    odpt_token = st.secrets["ODPT_TOKEN"] if "ODPT_TOKEN" in st.secrets else None
     
+    errors = []
     for operator, url in GTFS_URLS.items():
         op_path = os.path.join(data_dir, operator)
         if not os.path.exists(op_path) or not os.listdir(op_path):
+            if not odpt_token and "odpt" in url.lower():
+                errors.append(f"⚠️ {operator}: ODPT_TOKENが設定されていません。Streamlit Cloudの「Secrets」設定を確認してください。")
+                continue
+                
             try:
                 params = {}
                 # URLにODPTが含まれていて、トークンが設定されている場合はパラメータに付与
@@ -47,9 +52,12 @@ def prepare_gtfs_data(data_dir):
                     z.extractall(op_path)
                 print(f"✅ {operator} のデータ取得に成功しました")
             except Exception as e:
-                print(f"❌ {operator} のデータ取得に失敗しました: {e}")
+                error_msg = f"❌ {operator} のデータ取得に失敗しました: {e}"
+                print(error_msg)
+                errors.append(error_msg)
+    return errors
                 
-prepare_gtfs_data(DATA_DIR)
+dl_errors = prepare_gtfs_data(DATA_DIR)
 
 st.markdown("""
 <div class="no-print">
@@ -57,6 +65,11 @@ st.markdown("""
     <p style="margin-top: -10px; margin-bottom: 20px;">複数のバス事業者のデータを統合し、同じ停留所名であれば一つの時刻表にまとめて表示します。</p>
 </div>
 """, unsafe_allow_html=True)
+
+# データ取得エラーの表示
+if dl_errors:
+    for err in dl_errors:
+        st.error(err)
 
 # データの読み込み (キャッシュ機能を使って2回目以降の表示を高速化)
 @st.cache_data
