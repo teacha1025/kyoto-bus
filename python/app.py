@@ -61,8 +61,9 @@ dl_errors = prepare_gtfs_data(DATA_DIR)
 
 st.markdown("""
 <div class="no-print">
-    <h1 style="font-size: 2.25rem; font-weight: 600; padding-bottom: 1rem;">🚌 総合 区間時刻表アプリ</h1>
-    <p style="margin-top: -10px; margin-bottom: 20px;">複数のバス事業者のデータを統合し、同じ停留所名であれば一つの時刻表にまとめて表示します。</p>
+    <h1 style="font-size: 2.25rem; font-weight: 600; padding-bottom: 1rem;">🚌 京都市内バス時刻表アプリ</h1>
+    <p>京都市営バス・京都バスに対応(2026年3月30日時点でのダイヤ)</p>
+    <p>このサイトの情報は正確性を保証するものではありません。最新の情報は各バス会社の公式サイトをご確認ください。</p>
 </div>
 """, unsafe_allow_html=True)
 
