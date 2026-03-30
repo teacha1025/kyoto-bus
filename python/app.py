@@ -20,8 +20,8 @@ DATA_DIR = "gtfs_data"
 # --- GTFSデータの自動準備 ---
 # ダウンロードURLがわかる場合はここに記載します
 GTFS_URLS = {
-    # "kyoto_city": "https://api.odpt.org/api/v4/files/odpt/KyotoMunicipalTransportation/Kyoto_City_Bus_GTFS.zip?date=20260323",
-    # "kyoto_bus": "https://api.odpt.org/api/v4/files/odpt/KyotoBus/AllLines.zip?date=20260328"
+    "kyoto_city": "https://api.odpt.org/api/v4/files/odpt/KyotoMunicipalTransportation/Kyoto_City_Bus_GTFS.zip?date=20260323",
+    "kyoto_bus": "https://api.odpt.org/api/v4/files/odpt/KyotoBus/AllLines.zip?date=20260328"
 }
 
 @st.cache_resource
@@ -31,8 +31,7 @@ def prepare_gtfs_data(data_dir):
         
     # StreamlitのSecretsからトークンを取得（設定されていない場合はNone）
     odpt_token = st.secrets.get("ODPT_TOKEN")
-        
-    # 1. URLからの自動ダウンロードと展開
+    
     for operator, url in GTFS_URLS.items():
         op_path = os.path.join(data_dir, operator)
         if not os.path.exists(op_path) or not os.listdir(op_path):
@@ -48,17 +47,7 @@ def prepare_gtfs_data(data_dir):
                     z.extractall(op_path)
             except Exception as e:
                 print(f"❌ {operator} のデータ取得に失敗しました: {e}")
-
-    # 2. ローカルにある .zip ファイルの自動展開 (GitHubにZIPだけ上げた場合)
-    for item in os.listdir(data_dir):
-        if item.endswith('.zip'):
-            operator = item[:-4]
-            op_path = os.path.join(data_dir, operator)
-            zip_path = os.path.join(data_dir, item)
-            if not os.path.exists(op_path):
-                with zipfile.ZipFile(zip_path, 'r') as z:
-                    z.extractall(op_path)
-                    
+                
 prepare_gtfs_data(DATA_DIR)
 
 st.markdown("""
