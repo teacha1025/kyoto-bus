@@ -3,12 +3,63 @@ import pandas as pd
 import streamlit.components.v1 as components
 import os
 from datetime import datetime
+import pydeck as pdk
 import pytz
+from urllib.parse import quote
+import numpy as np
+from streamlit_geolocation import streamlit_geolocation
+import requests
+import zipfile
+import io
 
 st.set_page_config(page_title="バス区間時刻表アプリ", layout="wide")
 
 # --- データの読み込み ---
 DATA_DIR = "gtfs_data"
+
+# --- GTFSデータの自動準備 ---
+# ダウンロードURLがわかる場合はここに記載します
+GTFS_URLS = {
+    # "kyoto_city": "https://api.odpt.org/api/v4/files/odpt/KyotoMunicipalTransportation/Kyoto_City_Bus_GTFS.zip?date=20260323",
+    # "kyoto_bus": "https://api.odpt.org/api/v4/files/odpt/KyotoBus/AllLines.zip?date=20260328"
+}
+
+@st.cache_resource
+def prepare_gtfs_data(data_dir):
+    if not os.path.exists(data_dir):
+        os.makedirs(data_dir)
+        
+    # StreamlitのSecretsからトークンを取得（設定されていない場合はNone）
+    odpt_token = st.secrets.get("ODPT_TOKEN")
+        
+    # 1. URLからの自動ダウンロードと展開
+    for operator, url in GTFS_URLS.items():
+        op_path = os.path.join(data_dir, operator)
+        if not os.path.exists(op_path) or not os.listdir(op_path):
+            try:
+                params = {}
+                # URLにODPTが含まれていて、トークンが設定されている場合はパラメータに付与
+                if odpt_token and "odpt" in url.lower():
+                    params["acl:consumerKey"] = odpt_token
+                    
+                response = requests.get(url, params=params)
+                response.raise_for_status()
+                with zipfile.ZipFile(io.BytesIO(response.content)) as z:
+                    z.extractall(op_path)
+            except Exception as e:
+                print(f"❌ {operator} のデータ取得に失敗しました: {e}")
+
+    # 2. ローカルにある .zip ファイルの自動展開 (GitHubにZIPだけ上げた場合)
+    for item in os.listdir(data_dir):
+        if item.endswith('.zip'):
+            operator = item[:-4]
+            op_path = os.path.join(data_dir, operator)
+            zip_path = os.path.join(data_dir, item)
+            if not os.path.exists(op_path):
+                with zipfile.ZipFile(zip_path, 'r') as z:
+                    z.extractall(op_path)
+                    
+prepare_gtfs_data(DATA_DIR)
 
 st.markdown("""
 <div class="no-print">
@@ -21,7 +72,8 @@ st.markdown("""
 @st.cache_data
 def load_all_data(data_dir):
     all_stops, all_routes, all_trips, all_stop_times, all_calendars, all_calendar_dates = [], [], [], [], [], []
-    if not os.path.exists(data_dir): return (None,) * 6
+    operator_expirations = {}
+    if not os.path.exists(data_dir): return (None,) * 6, {}
     
     for operator in os.listdir(data_dir):
         op_path = os.path.join(data_dir, operator)
@@ -34,6 +86,14 @@ def load_all_data(data_dir):
             stop_times = pd.read_csv(os.path.join(op_path, "stop_times.txt"), dtype=str, encoding='utf-8')
             calendar = pd.read_csv(os.path.join(op_path, "calendar.txt"), dtype=str, encoding='utf-8')
             
+            # 期限の取得 (feed_info.txt が存在する場合)
+            try:
+                feed_info = pd.read_csv(os.path.join(op_path, "feed_info.txt"), dtype=str, encoding='utf-8')
+                if 'feed_end_date' in feed_info.columns and not feed_info['feed_end_date'].isna().all():
+                    operator_expirations[operator] = feed_info['feed_end_date'].dropna().iloc[0]
+            except Exception:
+                pass
+
             # IDの衝突を防ぐため、事業者名をプレフィックスとして付与
             prefix = f"{operator}_"
             stops['stop_id'] = prefix + stops['stop_id']
@@ -64,31 +124,276 @@ def load_all_data(data_dir):
         except FileNotFoundError: 
             continue
             
-    if not all_stops: return (None,) * 6
+    if not all_stops: return (None,) * 6, {}
     
     dfs_to_concat = [all_stops, all_routes, all_trips, all_stop_times, all_calendars, all_calendar_dates]
     concatenated_dfs = [pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame() for df_list in dfs_to_concat]
-    return tuple(concatenated_dfs)
+    return tuple(concatenated_dfs), operator_expirations
 
-stops, routes, trips, stop_times, calendar, calendar_dates = load_all_data(DATA_DIR)
+data_dfs, operator_expirations = load_all_data(DATA_DIR)
+stops, routes, trips, stop_times, calendar, calendar_dates = data_dfs
+
+# --- 有効期限のチェックと警告表示 ---
+if stops is not None:
+    expired_ops = []
+    current_date_str = datetime.now(pytz.timezone('Asia/Tokyo')).strftime('%Y%m%d')
+    for op, end_date in operator_expirations.items():
+        if end_date < current_date_str:
+            formatted_date = f"{end_date[:4]}/{end_date[4:6]}/{end_date[6:]}" if len(end_date) == 8 else end_date
+            expired_ops.append(f"**{op}** (期限: {formatted_date})")
+            
+    if expired_ops:
+        st.warning(f"⚠️ 以下の事業者の時刻表データは有効期限が切れています。新しいGTFSデータをダウンロードし、`{DATA_DIR}` フォルダ内を更新してください：\n\n" + " / ".join(expired_ops))
 
 if stops is None:
     st.error(f"⚠️ GTFSデータが見つかりません。`{DATA_DIR}` フォルダ内に事業者ごとのデータ（stops.txt, routes.txt, trips.txt, stop_times.txt, calendar.txtなど）を配置してください。")
+elif "trip_id" in st.query_params:
+    trip_id = st.query_params["trip_id"]
+    
+    if st.button("⬅️ 時刻表に戻る"):
+        params_to_keep = {k: v for k, v in st.query_params.items() if k not in ['trip_id', 'stop_seq']}
+        st.query_params.clear()
+        st.query_params.update(params_to_keep)
+        st.rerun()
+
+    trip_info = trips[trips['trip_id'] == trip_id]
+
+    if trip_info.empty:
+        st.error("指定された便の情報が見つかりません。")
+    else:
+        route_id = trip_info.iloc[0]['route_id']
+        route_info = routes[routes['route_id'] == route_id]
+        route_name = route_info.iloc[0]['route_short_name'] if not route_info.empty else "不明な系統"
+        headsign = trip_info.iloc[0]['trip_headsign'] if pd.notna(trip_info.iloc[0]['trip_headsign']) else "不明"
+        
+        st.subheader(f"🚌 {route_name}系統 ({headsign} 行き) 詳細情報")
+        
+        st_times = stop_times[stop_times['trip_id'] == trip_id].copy()
+        st_times['stop_sequence'] = pd.to_numeric(st_times['stop_sequence'])
+        st_times = st_times.sort_values('stop_sequence')
+        
+        merged_stops = pd.merge(st_times, stops, on='stop_id', how='left')
+        
+        col1, col2 = st.columns([1, 1])
+        
+        # col2 (右側) を先に処理して、テーブルの行選択(クリック)イベントを取得する
+        with col2:
+            st.markdown("##### 🚏 停車停留所と通過時刻")
+            st.markdown("<small>💡 停留所名をクリックすると、地図がその位置へ移動します</small>", unsafe_allow_html=True)
+            display_df = merged_stops[['stop_sequence', 'stop_name', 'arrival_time', 'departure_time']].copy()
+            display_df.columns = ['順序', '停留所名', '到着', '出発']
+            # 順序を1から始まる連番に振り直す
+            display_df['順序'] = range(1, len(display_df) + 1)
+            # 時刻を「時:分」の形式にして見やすくする（秒を省く）
+            display_df['到着'] = display_df['到着'].astype(str).str[:5]
+            display_df['出発'] = display_df['出発'].astype(str).str[:5]
+            
+            # セル（停留所名）をリンクに変換
+            def create_stop_link(row):
+                seq = row['順序']
+                name = row['停留所名']
+                dep_encoded = quote(st.query_params.get("dep", ""))
+                arr_encoded = quote(st.query_params.get("arr", ""))
+                return f"<a href='?dep={dep_encoded}&arr={arr_encoded}&trip_id={trip_id}&stop_seq={seq}' target='_self' class='stop-link'>{name}</a>"
+                
+            display_df['停留所名'] = display_df.apply(create_stop_link, axis=1)
+
+            st.markdown("""
+            <style>
+            table.stop-table {
+                width: 100%;
+                border-collapse: collapse;
+                text-align: center;
+                font-size: 0.95rem;
+            }
+            table.stop-table th, table.stop-table td {
+                border: 1px solid var(--border-color, #e0e0e0);
+                padding: 0.5rem;
+            }
+            table.stop-table th {
+                background-color: var(--secondary-background-color, #f0f2f6);
+            }
+            .stop-link {
+                text-decoration: none !important;
+                color: inherit !important;
+                display: block;
+                margin: -0.5rem; /* 親セルのパディングを埋める */
+                padding: 0.5rem; /* パディングを再適用してテキスト位置を維持 */
+                transition: background-color 0.2s;
+            }
+            .stop-link:hover {
+                background-color: rgba(128, 128, 128, 0.15); /* ホバー時に背景色を変更 */
+                text-decoration: none !important; /* 下線は表示しない */
+            }
+            </style>
+            """, unsafe_allow_html=True)
+            
+            # HTMLテーブルとして描画
+            st.markdown(display_df.to_html(escape=False, index=False, classes="stop-table"), unsafe_allow_html=True)
+
+            # URLパラメータから選択された行を取得
+            selected_seq = st.query_params.get("stop_seq")
+            selected_row = int(selected_seq) - 1 if selected_seq and selected_seq.isdigit() else None
+
+        with col1:
+            st.markdown("##### 📍 運行ルート（停留所位置）")
+            
+            # 現在地を取得するためのウィジェット
+            loc = streamlit_geolocation()
+            user_lat, user_lon = None, None
+            if loc and loc.get('latitude') is not None and loc.get('longitude') is not None:
+                user_lat = float(loc['latitude'])
+                user_lon = float(loc['longitude'])
+
+            if 'stop_lat' in merged_stops.columns and 'stop_lon' in merged_stops.columns:
+                map_data = merged_stops[['stop_lat', 'stop_lon', 'stop_name', 'arrival_time', 'departure_time']].copy()
+                map_data['lat'] = pd.to_numeric(map_data['stop_lat'], errors='coerce')
+                map_data['lon'] = pd.to_numeric(map_data['stop_lon'], errors='coerce')
+                map_data = map_data.dropna(subset=['lat', 'lon'])
+                # ツールチップ表示用に時刻を整形
+                map_data['arrival_time'] = map_data['arrival_time'].astype(str).str[:5]
+                map_data['departure_time'] = map_data['departure_time'].astype(str).str[:5]
+                
+                if not map_data.empty:
+                    # マーカーの色とサイズを初期化
+                    map_data['r'] = 255
+                    map_data['g'] = 0
+                    map_data['b'] = 0
+                    map_data['a'] = 180
+                    map_data['radius'] = 8
+                    
+                    selected_lat, selected_lon = None, None
+                    if selected_row is not None and selected_row in map_data.index:
+                        # 選択された停留所をハイライト（黄色）
+                        map_data.at[selected_row, 'g'] = 200
+                        map_data.at[selected_row, 'a'] = 255
+                        
+                        selected_lat = map_data.at[selected_row, 'lat']
+                        selected_lon = map_data.at[selected_row, 'lon']
+                        
+                    # 地図の中心とズームレベルを計算
+                    if selected_lat is not None and selected_lon is not None:
+                        mid_lat = selected_lat
+                        mid_lon = selected_lon
+                        zoom_level = 15
+                    else:
+                        mid_lat = map_data['lat'].mean()
+                        mid_lon = map_data['lon'].mean()
+                        zoom_level = 12
+
+                    # Pydeckを使用して地図を描画
+                    view_state = pdk.ViewState(
+                        latitude=mid_lat,
+                        longitude=mid_lon,
+                        zoom=zoom_level,
+                        pitch=0,
+                    )
+
+                    layer = pdk.Layer(
+                        "ScatterplotLayer",
+                        data=map_data,
+                        get_position="[lon, lat]",
+                        get_radius="radius",  # 半径を列から取得
+                        radius_units='meters',
+                        get_fill_color="[r, g, b, a]", # 色を列から取得
+                        pickable=True,
+                        auto_highlight=True,
+                    )
+
+                    tooltip = {
+                        "html": "<b>{stop_name}</b><br/>到着: {arrival_time}<br/>出発: {departure_time}",
+                        "style": {
+                            "backgroundColor": "steelblue",
+                            "color": "white",
+                            "font-family": "sans-serif",
+                            "font-size": "0.8rem",
+                        }
+                    }
+
+                    pydeck_map_style = "light"
+
+                    layers = [layer]
+                    
+                    # 現在地のマーカー（青色）を追加
+                    if user_lat and user_lon:
+                        user_data = pd.DataFrame([{
+                            "lat": user_lat, 
+                            "lon": user_lon, 
+                            "stop_name": "📍 現在地", 
+                            "arrival_time": "---", 
+                            "departure_time": "---"
+                        }])
+                        user_layer = pdk.Layer(
+                            "ScatterplotLayer",
+                            data=user_data,
+                            get_position="[lon, lat]",
+                            get_radius=8,
+                            radius_units='meters',
+                            get_fill_color=[0, 100, 255, 200],  # 青色
+                            pickable=True,
+                            auto_highlight=True,
+                        )
+                        layers.append(user_layer)
+
+                    st.pydeck_chart(pdk.Deck(layers=layers, initial_view_state=view_state, tooltip=tooltip, map_style=pydeck_map_style))
+                else:
+                    st.warning("位置情報データがありません。")
+            else:
+                st.warning("位置情報データがありません。")
+
 else:
     # 1. 出発・到着停留所の選択UI
     # 欠損値を除外し、あいうえお順にソートしてドロップダウンメニュー化
     stop_names = sorted(stops['stop_name'].dropna().unique())
+
+    # --- URLパラメータとウィジェットの状態を同期 ---
+    dep_param = st.query_params.get("dep")
+    arr_param = st.query_params.get("arr")
     
-    col1, col2 = st.columns(2)
+    try:
+        dep_index = stop_names.index(dep_param) if dep_param else (stop_names.index("京都駅前") if "京都駅前" in stop_names else 0)
+    except ValueError:
+        dep_index = 0
+        
+    try:
+        arr_index = stop_names.index(arr_param) if arr_param else (stop_names.index("四条河原町") if "四条河原町" in stop_names else 1)
+    except ValueError:
+        arr_index = 1
+
+    col1, col2, col3 = st.columns([5, 5, 2])
     with col1:
-        # デフォルトの停留所が存在しない場合でもエラーにならないようにする
-        dep_index = stop_names.index("京都駅前") if "京都駅前" in stop_names else 0
         selected_dep_stop = st.selectbox("🚏 出発停留所を選択", stop_names, index=dep_index)
     with col2:
-        # デフォルトの停留所が存在しない場合でもエラーにならないようにする
-        arr_index = stop_names.index("四条河原町") if "四条河原町" in stop_names else 1
         selected_arr_stop = st.selectbox("🚏 到着停留所を選択", stop_names, index=arr_index)
+        
+    # 選択をURLパラメータに反映（変更があれば自動で再実行される）
+    st.query_params["dep"] = selected_dep_stop
+    st.query_params["arr"] = selected_arr_stop
 
+    with col3:
+        # ボタンを垂直方向に中央揃えするためのプレースホルダー
+        st.markdown("<div style='height: 28px'></div>", unsafe_allow_html=True)
+        components.html("""
+            <style>
+                body { margin: 0; font-family: sans-serif; }
+                button { width: 100%; height: 40px; background-color: #fff; color: #0068c9; border: 1px solid #0068c9; border-radius: 0.5rem; cursor: pointer; font-size: 1rem; font-weight: bold; transition: all 0.2s; }
+                button:hover { background-color: #f0f2f6; }
+            </style>
+            <button id="share-btn">🔗 共有</button>
+            <script>
+                const btn = document.getElementById('share-btn');
+                btn.onclick = () => {
+                    navigator.clipboard.writeText(window.parent.location.href).then(() => {
+                        btn.innerText = '✅ コピー済';
+                        setTimeout(() => { btn.innerText = '🔗 共有'; }, 2000);
+                    }).catch(() => {
+                        btn.innerText = '⚠️ 失敗';
+                        setTimeout(() => { btn.innerText = '🔗 共有'; }, 2000);
+                    });
+                };
+            </script>
+        """, height=45)
+    
     if selected_dep_stop and selected_arr_stop:
         if selected_dep_stop == selected_arr_stop:
             st.warning("出発停留所と到着停留所には異なる停留所を選択してください。")
@@ -120,7 +425,7 @@ else:
                 valid_st = pd.merge(valid_st, routes, on="route_id")
 
                 # 必要なカラムに絞り、出発時刻順にソート
-                timetable = valid_st[['departure_time', 'route_short_name', 'trip_headsign', 'service_id']].copy()
+                timetable = valid_st[['trip_id', 'departure_time', 'route_short_name', 'trip_headsign', 'service_id']].copy()
                 timetable = timetable.dropna(subset=['departure_time'])
                 timetable = timetable.sort_values('departure_time')
 
@@ -222,10 +527,16 @@ else:
                         
                         base_html = f"<span style='font-size: 1.25em; font-weight: 500;'>{minute_str}</span><span style='font-size: 0.85em;'>{symbol_str}</span>"
                         
+                        trip_id_val = row['trip_id']
+                        # URLエンコードした現在の停留所選択を維持しつつ、trip_idを追加
+                        dep_encoded = quote(st.query_params.get("dep", ""))
+                        arr_encoded = quote(st.query_params.get("arr", ""))
+                        link_html = f"<a href='?dep={dep_encoded}&arr={arr_encoded}&trip_id={trip_id_val}' target='_self' class='trip-link'>{base_html}</a>"
+                        
                         # この行が「次の便」であればハイライト用クラスを適用
                         if row.name == next_bus_index:
-                            return f"<span class='next-bus-highlight'>{base_html}</span>"
-                        return base_html
+                            return f"<span class='next-bus-highlight'>{link_html}</span>"
+                        return link_html
 
                     df_day['minute_display'] = df_day.apply(create_minute_html, axis=1)
                     # --- ここまで ---
@@ -287,14 +598,33 @@ else:
                     padding: 2px 4px;
                     display: inline-block;
                 }
+                /* リンクのホバー効果 */
+                .trip-link {
+                text-decoration: none !important;
+                color: inherit !important;
+                    display: inline-block;
+                    padding: 0.2rem 0.3rem;
+                    border-radius: 4px;
+                    transition: background-color 0.2s;
+                }
+                .trip-link:hover {
+                    background-color: rgba(128, 128, 128, 0.15);
+                text-decoration: none !important;
+                }
                 /* 印刷用のスタイル */
                 @media print {
+                    /* 次の便のハイライトを無効化 */
+                    .next-bus-highlight {
+                        background-color: transparent !important;
+                        padding: 0 !important;
+                    }
                     /* Streamlitのヘッダーや不要なUI、タイトル等を非表示にする */
                     header, footer, [data-testid="stHeader"], [data-testid="stToolbar"], .no-print {
                         display: none !important;
                     }
                     /* 停留所選択メニュー(水平ブロック)や印刷ボタンを含むコンテナごと非表示にする */
                     [data-testid="stHorizontalBlock"],
+                    [data-testid="stCheckbox"],
                     .element-container:has(iframe) {
                         display: none !important;
                     }
@@ -320,6 +650,7 @@ else:
 
                 # 印刷ボタン（Reactのエラーを防ぐためiframe内で描画し、親要素を印刷させる）
                 components.html("""
+                <style>body { background-color: transparent !important; margin: 0; }</style>
                 <div style="text-align: right; margin-bottom: 5px;">
                     <button onclick="window.parent.print()" style="padding: 0.5rem 1rem; background-color: #0068c9; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem; font-weight: bold; font-family: sans-serif;">
                         🖨️ 時刻表を印刷する
