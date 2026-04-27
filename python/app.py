@@ -21,7 +21,7 @@ DATA_DIR = "gtfs_data"
 # ダウンロードURLがわかる場合はここに記載します
 GTFS_URLS = {
     "市バス": "https://api.odpt.org/api/v4/files/odpt/KyotoMunicipalTransportation/Kyoto_City_Bus_GTFS.zip?date=20260323",
-    "京都バス": "https://api.odpt.org/api/v4/files/odpt/KyotoBus/AllLines.zip?date=20260328"
+    "京都バス": "https://api.odpt.org/api/v4/files/odpt/KyotoBus/AllLines.zip?date=20260408"
 }
 
 @st.cache_resource
