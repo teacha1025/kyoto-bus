@@ -20,7 +20,7 @@ DATA_DIR = "gtfs_data"
 # --- GTFSデータの自動準備 ---
 # ダウンロードURLがわかる場合はここに記載します
 GTFS_URLS = {
-    "市バス": "https://api.odpt.org/api/v4/files/odpt/KyotoMunicipalTransportation/Kyoto_City_Bus_GTFS.zip?date=20260323",
+    "市バス": "https://api.odpt.org/api/v4/files/odpt/KyotoMunicipalTransportation/Kyoto_City_Bus_GTFS.zip?date=20260423",
     "京都バス": "https://api.odpt.org/api/v4/files/odpt/KyotoBus/AllLines.zip?date=20260408"
 }
 
